@@ -100,7 +100,8 @@ import particles
 import particles.state_space_models as ssms
 from particles import smc_samplers as ssp
 from particles import utils
-
+import datetime as dt
+from particles import kalman as kalman
 
 def msjd(theta):
     """Mean squared jumping distance.
@@ -164,6 +165,8 @@ class MCMC:
     def print_progress(self, n):
         params = self.chain.theta.dtype.fields.keys()
         msg = "Iteration %i" % n
+        
+        msg += ", " + str(dt.datetime.now())
         if hasattr(self, "nacc") and n > 0:
             msg += ", acc. rate=%.3f" % (self.nacc / n)
         for p in params:
@@ -445,9 +448,98 @@ class PMMH(GenericRWHM):
     def compute_post(self):
         self.prop.lpost[0] = self.prior.logpdf(self.prop.theta)
         if np.isfinite(self.prop.lpost[0]):
+            self.pf = self.alg_instance(ssp.rec_to_dict(self.prop.theta[0]))
+            self.pf.run()
+            self.prop.lpost[0] += self.pf.logLt
+
+
+class KMMH(GenericRWHM):
+    """Kalman Marginal Metropolis Hastings.
+
+    KMMH is class of Metropolis samplers where the intractable likelihood of
+    the considered state-space model is replaced by an estimate obtained from
+    a Kalman filter.
+    """
+
+    def __init__(
+        self,
+        niter=10,
+        verbose=0,
+        ssm_cls=None,
+        prior=None,
+        data=None,
+        Nx=100,
+        theta0=None,
+        adaptive=True,
+        scale=1.0,
+        rw_cov=None,
+    ):
+        """
+        Parameters
+        ----------
+        niter: int
+            number of iterations
+        verbose: int (default=0)
+            print some info every `verbose` iterations (never if 0)
+        ssm_cls: StateSpaceModel class
+            the considered parametric class of state-space models
+        prior: StructDist
+            the prior
+        data: list-like
+            the data
+        Nx: int
+            number of particles (for the particle filter that evaluates the
+            likelihood)
+        theta0: structured array of length=1
+            starting point (generated from prior if =None)
+        adaptive: True/False
+            If true, random walk covariance matrix is adapted recursively
+            based on past samples; see also scale and rw_cov for extra info.
+        scale: positive scalar (default = 1.)
+            in the adaptive case, covariance of the proposal is scale^2 times
+            (2.38^2 / d) times the current estimate of the target covariance
+        rw_cov: (d, d) array (defaults to Identity matrix if not provided)
+            covariance matrix of the random walk proposal if adaptive=False;
+            if adaptive=True, rw_cov is used as a preliminary guess for the
+            covariance matrix of the target.
+        """
+        self.ssm_cls = ssm_cls
+        self.prior = prior
+        self.data = data
+        self.Nx = Nx
+        GenericRWHM.__init__(
+            self,
+            niter=niter,
+            verbose=verbose,
+            theta0=theta0,
+            adaptive=adaptive,
+            scale=scale,
+            rw_cov=rw_cov,
+        )
+
+    # def alg_instance(self, theta):
+    #     return kalman.Kalman()
+    #     return self.smc_cls(
+    #         fk=self.fk_cls(ssm=self.ssm_cls(**theta), data=self.data),
+    #         N=self.Nx,
+    #         **self.smc_options
+    #     )
+    
+    def compute_post(self):
+        self.prop.lpost[0] = self.prior.logpdf(self.prop.theta)
+        if np.isfinite(self.prop.lpost[0]):
             pf = self.alg_instance(ssp.rec_to_dict(self.prop.theta[0]))
             pf.run()
             self.prop.lpost[0] += pf.logLt
+
+    def compute_post(self):
+        self.prop.lpost[0] = self.prior.logpdf(self.prop.theta)
+        if np.isfinite(self.prop.lpost[0]):
+            params = ssp.rec_to_dict(self.prop.theta[0])
+            ssm_instance = self.ssm_cls(**params)
+            kal = kalman.Kalman(ssm_instance, self.data)
+            kal.filter()
+            self.prop.lpost[0] += kal.logLt
 
 
 class CSMC(particles.SMC):
