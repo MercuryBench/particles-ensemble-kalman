@@ -445,7 +445,7 @@ class ThetaParticles:
             return self.__class__(shared=self.shared.copy(), **fields)
 
     def __setitem__(self, key, value):
-        for k, v in self.dict_fields.item():
+        for k, v in self.dict_fields.items():
             v[key] = getattr(value, k)
 
     def copy(self):
